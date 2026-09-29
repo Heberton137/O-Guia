@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
-import { X, Upload, FileText, Sparkles, AlertCircle, Loader2, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { X, Upload, FileText, Sparkles, AlertCircle, Loader2, ShieldCheck, CheckCircle2, Zap, ArrowRight, Play } from 'lucide-react';
 import { StudyGuide } from '../types/guide';
+import { SAMPLE_PHYSICS_GUIDE, SAMPLE_CALCULUS_GUIDE } from '../data/sampleGuides';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -279,6 +280,45 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* Opções Rápidas de Teste / Demonstração */}
+          <div className="pt-2 border-t border-stone-200/70 space-y-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold text-stone-600 uppercase tracking-wider">
+              <Zap className="w-3.5 h-3.5 text-amber-600" />
+              <span>Ou teste agora com um material pré-processado:</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onGuideLoaded(SAMPLE_PHYSICS_GUIDE);
+                  onClose();
+                }}
+                className="p-2.5 bg-stone-50 hover:bg-stone-100 border border-stone-200 rounded-xl text-left transition-all flex items-center justify-between group cursor-pointer"
+              >
+                <div>
+                  <div className="text-xs font-bold text-stone-900">Física & Mecânica</div>
+                  <div className="text-[10px] text-stone-500">Trabalho, Energia e Conservação</div>
+                </div>
+                <Play className="w-3.5 h-3.5 text-amber-600 group-hover:translate-x-0.5 transition-transform" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onGuideLoaded(SAMPLE_CALCULUS_GUIDE);
+                  onClose();
+                }}
+                className="p-2.5 bg-stone-50 hover:bg-stone-100 border border-stone-200 rounded-xl text-left transition-all flex items-center justify-between group cursor-pointer"
+              >
+                <div>
+                  <div className="text-xs font-bold text-stone-900">Cálculo Diferencial</div>
+                  <div className="text-[10px] text-stone-500">Limites, Taxas e Derivadas</div>
+                </div>
+                <Play className="w-3.5 h-3.5 text-stone-600 group-hover:translate-x-0.5 transition-transform" />
+              </button>
+            </div>
+          </div>
 
           {/* Estado de Processamento Ativo */}
           {isProcessing && (

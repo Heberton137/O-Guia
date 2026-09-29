@@ -11,8 +11,11 @@ import { GlossarySection } from './components/GlossarySection';
 import { UploadModal } from './components/UploadModal';
 import { DoubtModal } from './components/DoubtModal';
 import { PrintSummaryModal } from './components/PrintSummaryModal';
+import { GitHubModal } from './components/GitHubModal';
 import { ArrowRight, FileText, RefreshCw, Upload } from 'lucide-react';
 import { sanitizeStudyGuide } from './utils/guideSanitizer';
+import { SAMPLE_PHYSICS_GUIDE } from './data/sampleGuides';
+import { GitHubUser } from './services/githubService';
 
 export default function App() {
   // Inicialização limpa: sem pré-lista de assuntos.
@@ -39,7 +42,40 @@ export default function App() {
   const [isUploadOpen, setIsUploadOpen] = useState<boolean>(false);
   const [isDoubtOpen, setIsDoubtOpen] = useState<boolean>(false);
   const [isExportOpen, setIsExportOpen] = useState<boolean>(false);
+  const [isGitHubOpen, setIsGitHubOpen] = useState<boolean>(false);
   const [activeTopicDoubt, setActiveTopicDoubt] = useState<{ title: string; overview: string } | null>(null);
+
+  // Estado GitHub
+  const [githubUser, setGithubUser] = useState<GitHubUser | null>(() => {
+    try {
+      const saved = localStorage.getItem('o_guia_github_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  const [githubToken, setGithubToken] = useState<string | null>(() => {
+    return localStorage.getItem('o_guia_github_token');
+  });
+
+  const handleGitHubAuthSuccess = (token: string, user: GitHubUser) => {
+    setGithubToken(token);
+    setGithubUser(user);
+    try {
+      localStorage.setItem('o_guia_github_token', token);
+      localStorage.setItem('o_guia_github_user', JSON.stringify(user));
+    } catch (e) {}
+  };
+
+  const handleGitHubDisconnect = () => {
+    setGithubToken(null);
+    setGithubUser(null);
+    try {
+      localStorage.removeItem('o_guia_github_token');
+      localStorage.removeItem('o_guia_github_user');
+    } catch (e) {}
+  };
 
   const handleSelectAnswer = (exerciseId: string, optionId: string) => {
     setUserAnswers((prev) => ({
@@ -104,6 +140,9 @@ export default function App() {
           setIsDoubtOpen(true);
         }}
         onOpenExport={() => setIsExportOpen(true)}
+        onOpenGitHub={() => setIsGitHubOpen(true)}
+        githubUser={githubUser}
+        onLoadSampleGuide={() => handleGuideLoaded(SAMPLE_PHYSICS_GUIDE)}
         answeredCount={answeredCount}
         totalExercises={totalExercises}
       />
@@ -257,6 +296,16 @@ export default function App() {
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
         onGuideLoaded={handleGuideLoaded}
+      />
+
+      <GitHubModal
+        isOpen={isGitHubOpen}
+        onClose={() => setIsGitHubOpen(false)}
+        currentGuide={currentGuide}
+        githubUser={githubUser}
+        githubToken={githubToken}
+        onAuthSuccess={handleGitHubAuthSuccess}
+        onDisconnect={handleGitHubDisconnect}
       />
 
       {currentGuide && (

@@ -428,6 +428,293 @@ Diretrizes obrigatórias de resposta:
 app.use('/fonts', express.static(path.resolve(__dirname, 'node_modules/katex/dist/fonts')));
 app.use('/fonts', express.static(path.resolve(__dirname, 'public/fonts')));
 
+// ==========================================
+// INTEGRAÇÃO COM GITHUB (OAuth & Gists)
+// ==========================================
+
+// 1. Obter URL de Autorização do GitHub
+app.get('/api/auth/github/url', (req: Request, res: Response) => {
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  const requestedRedirect = req.query.redirectUri as string;
+  const defaultOrigin = process.env.APP_URL || 'https://ais-dev-j7b7arcohzsd6drbot2ify-332958152110.us-east1.run.app';
+  const redirectUri = requestedRedirect || `${defaultOrigin.replace(/\/$/, '')}/auth/github/callback`;
+
+  const devCallback = 'https://ais-dev-j7b7arcohzsd6drbot2ify-332958152110.us-east1.run.app/auth/github/callback';
+  const sharedCallback = 'https://ais-pre-j7b7arcohzsd6drbot2ify-332958152110.us-east1.run.app/auth/github/callback';
+
+  if (!clientId) {
+    return res.json({
+      configured: false,
+      clientId: null,
+      redirectUri,
+      devCallbackUrl: devCallback,
+      sharedCallbackUrl: sharedCallback,
+      message: 'GITHUB_CLIENT_ID e GITHUB_CLIENT_SECRET ainda não configurados nas variáveis de ambiente.',
+    });
+  }
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    scope: 'read:user user:email gist',
+    state: Math.random().toString(36).substring(7),
+  });
+
+  const authUrl = `https://github.com/login/oauth/authorize?${params.toString()}`;
+
+  return res.json({
+    configured: true,
+    url: authUrl,
+    clientId,
+    redirectUri,
+    devCallbackUrl: devCallback,
+    sharedCallbackUrl: sharedCallback,
+  });
+});
+
+// 2. Callback de Retorno do GitHub OAuth (lida com popups e iframe)
+const githubCallbackHandler = async (req: Request, res: Response) => {
+  const { code, error, error_description } = req.query;
+
+  if (error) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Erro GitHub OAuth</title></head>
+        <body style="font-family: system-ui, sans-serif; padding: 30px; text-align: center; background: #fafaf9; color: #1c1917;">
+          <h3 style="color: #b91c1c;">Autorização Cancelada ou Negada</h3>
+          <p>${error_description || error}</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GITHUB_AUTH_ERROR', error: ${JSON.stringify(error_description || error)} }, '*');
+              setTimeout(function() { window.close(); }, 2000);
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  }
+
+  if (!code || typeof code !== 'string') {
+    return res.status(400).send('Código de autorização não informado.');
+  }
+
+  const clientId = process.env.GITHUB_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    return res.status(500).send('Serviço OAuth do GitHub não configurado no servidor.');
+  }
+
+  try {
+    // Troca do code por access_token
+    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+      }),
+    });
+
+    const tokenData = await tokenRes.json();
+
+    if (tokenData.error) {
+      throw new Error(tokenData.error_description || tokenData.error);
+    }
+
+    const accessToken = tokenData.access_token;
+
+    // Buscar perfil do usuário autenticado no GitHub
+    const userRes = await fetch('https://api.github.com/user', {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'OGuia-Plataforma-Pedagogica',
+      },
+    });
+
+    const userData = await userRes.json();
+
+    // Enviar mensagem para a janela principal via postMessage e fechar o popup
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Autenticado com Sucesso</title></head>
+        <body style="font-family: system-ui, sans-serif; padding: 30px; text-align: center; background: #fafaf9; color: #1c1917;">
+          <h3 style="color: #15803d;">Conectado com o GitHub com Sucesso!</h3>
+          <p>Olá, <strong>${userData.name || userData.login}</strong> (@${userData.login}). Fechando esta janela...</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({
+                type: 'GITHUB_AUTH_SUCCESS',
+                token: ${JSON.stringify(accessToken)},
+                user: ${JSON.stringify(userData)}
+              }, '*');
+              window.close();
+            } else {
+              window.location.href = '/';
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (err: any) {
+    console.error('Erro na troca do token GitHub:', err);
+    return res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Erro na Autenticação</title></head>
+        <body style="font-family: system-ui, sans-serif; padding: 30px; text-align: center;">
+          <h3 style="color: #b91c1c;">Falha na Autenticação</h3>
+          <p>${err.message || 'Erro desconhecido'}</p>
+        </body>
+      </html>
+    `);
+  }
+};
+
+app.get(['/auth/github/callback', '/auth/github/callback/'], githubCallbackHandler);
+
+// 3. Exportar Guia de Estudos para o GitHub Gist
+app.post('/api/github/export-gist', async (req: Request, res: Response) => {
+  try {
+    const { token, guide, isPublic = true } = req.body;
+
+    if (!token) {
+      return res.status(401).json({ error: 'Token do GitHub ausente. Conecte sua conta primeiro.' });
+    }
+
+    if (!guide || !guide.title) {
+      return res.status(400).json({ error: 'Dados do plano de estudo não informados.' });
+    }
+
+    const safeTitle = (guide.title || 'Guia de Estudos')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '_')
+      .replace(/_+/g, '_');
+
+    const fileName = `${safeTitle}.md`;
+
+    // Montagem do Markdown formatado com padrão acadêmico
+    let md = `# ${guide.title}\n\n`;
+    md += `**Disciplina:** ${guide.discipline || 'Geral'}  \n`;
+    md += `**Data:** ${new Date().toLocaleDateString('pt-BR')}  \n`;
+    md += `*Compilado automaticamente pela plataforma O Guia*\n\n`;
+
+    md += `## 1. Visão Geral para Leigos\n\n`;
+    md += `${guide.summaryForBeginners || ''}\n\n`;
+
+    if (Array.isArray(guide.keyObjectives) && guide.keyObjectives.length > 0) {
+      md += `## 2. Metas de Aprendizagem\n\n`;
+      guide.keyObjectives.forEach((obj: string, i: number) => {
+        md += `${i + 1}. ${obj}\n`;
+      });
+      md += `\n`;
+    }
+
+    if (Array.isArray(guide.modules) && guide.modules.length > 0) {
+      md += `## 3. Tópicos e Fundamentos Didáticos\n\n`;
+      guide.modules.forEach((mod: any, idx: number) => {
+        md += `### ${idx + 1}. ${mod.title}\n\n`;
+        md += `${mod.detailedExplanation || mod.overview}\n\n`;
+
+        if (mod.practicalExample) {
+          md += `> **Aplicação Prática:** ${mod.practicalExample}\n\n`;
+        }
+
+        if (mod.frequentPitfall) {
+          md += `> ⚠️ **Atenção ao Detalhe / Pegadinha Comum:** ${mod.frequentPitfall}\n\n`;
+        }
+      });
+    }
+
+    if (Array.isArray(guide.practiceExercises) && guide.practiceExercises.length > 0) {
+      md += `## 4. Exercícios de Fixação com Gabarito Comentado\n\n`;
+      guide.practiceExercises.forEach((ex: any, idx: number) => {
+        md += `### Questão ${idx + 1} (${ex.difficulty || 'Intermediário'})\n\n`;
+        md += `${ex.statement}\n\n`;
+
+        if (Array.isArray(ex.options)) {
+          ex.options.forEach((opt: any) => {
+            const isCorrect = opt.id === ex.correctOptionId ? ' ✅' : '';
+            md += `- **(${opt.id})** ${opt.text}${isCorrect}\n`;
+          });
+          md += `\n`;
+        }
+
+        if (ex.commentedAnalysis) {
+          md += `**Gabarito Oficial:** Alternativa (${ex.correctOptionId})\n\n`;
+          md += `**Justificativa:** ${ex.commentedAnalysis.correctReason || ''}\n\n`;
+
+          if (Array.isArray(ex.commentedAnalysis.distractorExplanations) && ex.commentedAnalysis.distractorExplanations.length > 0) {
+            md += `*Análise das alternativas incorretas:*\n`;
+            ex.commentedAnalysis.distractorExplanations.forEach((d: any) => {
+              md += `- Opção (${d.optionId}): ${d.whyIncorrect}\n`;
+            });
+            md += `\n`;
+          }
+
+          if (ex.commentedAnalysis.keyTakeaway) {
+            md += `**Síntese Mnemônica:** ${ex.commentedAnalysis.keyTakeaway}\n\n`;
+          }
+        }
+      });
+    }
+
+    if (Array.isArray(guide.glossary) && guide.glossary.length > 0) {
+      md += `## 5. Glossário Conceitual\n\n`;
+      guide.glossary.forEach((term: any) => {
+        md += `### ${term.term}\n\n`;
+        md += `- **Definição:** ${term.definition}\n`;
+        md += `- **Analogia:** ${term.simpleAnalogy}\n\n`;
+      });
+    }
+
+    // Criar o Gist no GitHub
+    const gistResponse = await fetch('https://api.github.com/gists', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'OGuia-Plataforma-Pedagogica',
+      },
+      body: JSON.stringify({
+        description: `Plano de Estudos: ${guide.title} [Gerado por O Guia]`,
+        public: Boolean(isPublic),
+        files: {
+          [fileName]: {
+            content: md,
+          },
+        },
+      }),
+    });
+
+    const gistData = await gistResponse.json();
+
+    if (!gistResponse.ok) {
+      throw new Error(gistData.message || 'Falha ao registrar Gist no GitHub.');
+    }
+
+    return res.json({
+      success: true,
+      gistUrl: gistData.html_url,
+      gistId: gistData.id,
+      fileName,
+    });
+  } catch (err: any) {
+    console.error('Erro ao exportar Gist para o GitHub:', err);
+    return res.status(500).json({
+      error: err.message || 'Ocorreu um erro ao comunicar com a API do GitHub.',
+    });
+  }
+});
+
 // Inicialização do servidor com Vite integrado
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
